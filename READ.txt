@@ -1,0 +1,34 @@
+Prerequisites
+OneDrive: You must be logged into our company OneDrive and have the "Spectricity Home - MaterialTracker" folder synced locally. The script will automatically find this folder based on your Windows user profile.
+
+Python & Git: Ensure Python and Git are installed and added to your system PATH.
+
+Step 1: Clone the Code
+Open your terminal (or VS Code) and run:
+
+git clone git@gitlab.spectricity.com:jerry.wang/materialtracker.git
+cd materialtracker
+
+Step 2: Install Dependencies
+Run the following command to install the required Python libraries:
+
+pip install -r requirements.txt
+
+Step 3: Start the Application
+Run the app:
+
+streamlit run APP.py
+
+Your default browser will automatically open with the UI (usually at http://localhost:8501).
+
+How to Get Updates (Auto-Sync Enabled)
+I have integrated an auto-update feature into the code.
+
+To get the latest version: Simply press F5 in your browser, or restart the app. The system will automatically check GitLab and pull the latest code in the background.
+
+You will see a loading spinner ("Updating code...") followed by a success toast if a new version is found.
+
+Important Notes
+Do NOT open "materials.csv" in Excel while using the app. If the file is locked by Excel, the app cannot write new records and will show an error.
+
+Because we are using the shared SharePoint folder, your local app is reading and writing to the same database as everyone else.
