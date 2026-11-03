@@ -23,9 +23,12 @@ import streamlit as st
 import pandas as pd
 
 st.set_page_config(page_title="物料管理 / Material Tracker", layout="wide")
-st.title("📦 物料档案与借还管理 / Material Archive & Borrowing Management")
+st.title("📦 物料档案与借还管理(上海) / Material Archive & Borrowing Management(Only Shanghai office)")
 
-SHAREPOINT_BASE = r"C:\Users\Administrator\OneDrive - spectricity.com\Spectricity Home - MaterialTracker"
+# 自动获取当前电脑的用户主目录
+user_home = os.path.expanduser("~")
+SHAREPOINT_BASE = os.path.join(user_home, r"OneDrive - spectricity.com\Spectricity Home - MaterialTracker")
+
 CSV_FILE = os.path.join(SHAREPOINT_BASE, "materials.csv")
 PHOTO_DIR = os.path.join(SHAREPOINT_BASE, "photos")
 
@@ -166,11 +169,48 @@ def export_excel_with_images(df):
     buffer.seek(0)
     return buffer
 
-
-# ================= 侧边栏 UI (去掉表单，防回车误提交) =================
+# ================= 侧边栏 UI =================
 with st.sidebar:
     st.header("📝 登记新物料 / Register New Material")
     
+    # ================= 自动检测 Git 更新模块 (全双语) =================
+    if "has_update" not in st.session_state:
+        st.session_state.has_update = False
+
+    def check_git_update():
+        try:
+            # 静默拉取，超时3秒防卡死
+            subprocess.run(["git", "fetch", "origin", "master"], capture_output=True, timeout=3, check=True)
+            local_hash = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode("utf-8").strip()
+            remote_hash = subprocess.check_output(["git", "rev-parse", "origin/master"]).decode("utf-8").strip()
+            
+            if local_hash != remote_hash:
+                st.session_state.has_update = True
+            else:
+                st.session_state.has_update = False
+        except Exception:
+            # 如果未配置 Git 环境（如直接下载的压缩包），则静默忽略
+            st.session_state.has_update = False
+
+    check_git_update()
+
+    if st.session_state.has_update:
+        if st.button("🚀 发现新版本，点击更新 / New Updates Available!", type="primary", use_container_width=True):
+            with st.spinner("正在拉取最新代码... / Pulling latest code..."):
+                try:
+                    subprocess.run(["git", "pull", "origin", "master"], check=True)
+                    st.success("✅ 更新成功！请按 F5 刷新网页 / Update successful! Please press F5 to refresh.")
+                    st.session_state.has_update = False
+                    time.sleep(2)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"更新失败 / Update failed: {e}")
+    else:
+        st.button("✅ 已是最新版本 / Up to Date", disabled=True, use_container_width=True)
+        
+    st.divider()
+    # ================= 更新模块结束 =================
+
     material = st.text_input("物料名称 / Material Name *")
     
     # 1. 动态合并物料类型
@@ -207,7 +247,7 @@ with st.sidebar:
     photos = st.file_uploader("上传照片 (支持多选) / Upload Photos (Multiple)", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
     note = st.text_area("备注/目的 / Remarks/Purpose")
     
-    # 4. 独立按钮提交
+    # 4. 独立按钮提交 (防回车误触)
     if st.button("提交登记 / Submit Registration", type="primary", use_container_width=True):
         if not material.strip() or not handler.strip():
             st.error("物料名称和经办人必填！ / Material Name and Operator are required!")
@@ -316,7 +356,6 @@ else:
                     st.markdown("**📥 最近入库 / Last Inbound**")
                     if not last_in.empty:
                         r = last_in.iloc[0]
-                        # 核心修改：保证换行，解决混成一锅粥的问题（利用 markdown 的尾随两个空格换行）
                         st.markdown(f"时间 / Time: {r['时间']}  \n地点 / Loc: {r['去向/来源']}  \n经办人 / Op: {r['经办人']}  \n目的 / Purpose: {r['备注']}")
                     else: 
                         st.write("无记录 / No record")
