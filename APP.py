@@ -173,43 +173,42 @@ def export_excel_with_images(df):
 with st.sidebar:
     st.header("📝 登记新物料 / Register New Material")
     
-    # ================= 自动检测 Git 更新模块 (全双语) =================
-    if "has_update" not in st.session_state:
-        st.session_state.has_update = False
+    # ================= 全自动静默更新模块 (带提示) =================
+    if "checked_git" not in st.session_state:
+        st.session_state.checked_git = False
 
-    def check_git_update():
+    def silent_auto_update():
         try:
-            # 静默拉取，超时3秒防卡死
+            # 1. 静默获取远端状态（超时3秒防卡死）
             subprocess.run(["git", "fetch", "origin", "master"], capture_output=True, timeout=3, check=True)
             local_hash = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode("utf-8").strip()
             remote_hash = subprocess.check_output(["git", "rev-parse", "origin/master"]).decode("utf-8").strip()
             
+            # 2. 如果本地和远端不一致，在后台偷偷 pull！
             if local_hash != remote_hash:
-                st.session_state.has_update = True
-            else:
-                st.session_state.has_update = False
+                with st.spinner("⏳ 正在更新代码，请稍候... / Updating code, please wait..."):
+                    subprocess.run(["git", "pull", "origin", "master"], capture_output=True, check=True)
+                    time.sleep(1) # 让提示框停留1秒，让同事能看清
+                    st.toast("✅ 更新成功！页面即将刷新 / Updated successfully!", icon="🚀")
+                    st.session_state.checked_git = True # 标记已检查
+                    st.rerun() # 强制刷新网页
+                
         except Exception:
-            # 如果未配置 Git 环境（如直接下载的压缩包），则静默忽略
-            st.session_state.has_update = False
-
-    check_git_update()
-
-    if st.session_state.has_update:
-        if st.button("🚀 发现新版本，点击更新 / New Updates Available!", type="primary", use_container_width=True):
-            with st.spinner("正在拉取最新代码... / Pulling latest code..."):
-                try:
-                    subprocess.run(["git", "pull", "origin", "master"], check=True)
-                    st.success("✅ 更新成功！请按 F5 刷新网页 / Update successful! Please press F5 to refresh.")
-                    st.session_state.has_update = False
-                    time.sleep(2)
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"更新失败 / Update failed: {e}")
-    else:
-        st.button("✅ 已是最新版本 / Up to Date", disabled=True, use_container_width=True)
+            # 如果没网或者没装 Git，静默跳过，不报错
+            pass
         
+        # 标记已检查过，避免每次交互都去请求 Git 导致卡顿
+        st.session_state.checked_git = True
+
+    # 只有当还没检查过的时候，才执行静默更新
+    if not st.session_state.checked_git:
+        silent_auto_update()
+
+    # 显示状态（为了美观，留个灰色的提示）
+    st.button("✅ 自动同步已开启 / Auto-Sync Enabled", disabled=True, use_container_width=True)
+    # ================= 自动更新模块结束 =================
+    
     st.divider()
-    # ================= 更新模块结束 =================
 
     material = st.text_input("物料名称 / Material Name *")
     
