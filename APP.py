@@ -23,7 +23,7 @@ import streamlit as st
 import pandas as pd
 
 st.set_page_config(page_title="物料管理 / Material Tracker", layout="wide")
-st.title("📦 物料档案与借还管理(上海) / Material Archive & Borrowing Management(Only Shanghai office)")
+st.title("📦 物料档案(上海) / Material Management(Only Shanghai office)")
 
 # 自动获取当前电脑的用户主目录
 user_home = os.path.expanduser("~")
