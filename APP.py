@@ -22,17 +22,32 @@ def init_supabase():
         key = st.secrets["SUPABASE_KEY"]
         return create_client(url, key)
     except Exception as e:
-        st.error("⚠️ 缺少 Supabase Secrets 配置，请在 Streamlit 后台设置 SUPABASE_URL 和 SUPABASE_KEY。")
+        st.error("⚠️ 缺少 Supabase Secrets 配置，请检查后台。")
         st.stop()
 
 supabase = init_supabase()
-TABLE_NAME = "Material"          # 你的 Supabase 表名 (注意大小写)
-BUCKET_NAME = "material-photos"  # 你的图片桶名
+TABLE_NAME = "Material"          
+BUCKET_NAME = "material-photos"  
 
-cols = ["时间", "SN码", "物料类型", "供应商", "物料名称", "动作", "去向/来源", "经办人", "备注", "照片路径列表", "档案备注"]
+# ================= 2. 严格对齐你的表头命名 =================
+C_TIME = "Time"
+C_SN = "SN (自定义)"
+C_TYPE = "物料类型/Material type"
+C_VENDOR = "供应商/Vendor"
+C_NAME = "物料名称/Material name"
+C_FROM = "来自/Shipped from"
+C_CURRENT = "暂存于/Current location"
+C_OP_IN = "操作员Operator_In"
+C_TO = "寄往/Shipped to"
+C_TARGET = "目的地/Target location"
+C_OP_OUT = "操作员Operator_Out"
+C_NOTE = "备注/Notes"
+C_PHOTOS = "图像路径/Image path"
 
-# ================= 2. 从云端读取数据 =================
-@st.cache_data(ttl=3) # 缓存 3 秒
+cols = [C_TIME, C_SN, C_TYPE, C_VENDOR, C_NAME, C_FROM, C_CURRENT, C_OP_IN, C_TO, C_TARGET, C_OP_OUT, C_NOTE, C_PHOTOS]
+
+# ================= 3. 从云端读取数据 =================
+@st.cache_data(ttl=3) 
 def load_data():
     try:
         response = supabase.table(TABLE_NAME).select("*").order('id', desc=True).execute()
@@ -44,35 +59,40 @@ def load_data():
                 df[c] = ""
         return df
     except Exception as e:
-        st.error(f"读取云端数据失败 / Failed to load data: {e}")
+        st.error(f"读取云端数据失败: {e}")
         return pd.DataFrame(columns=cols)
 
 df = load_data()
 
-# ================= 3. 生成带图 Excel (从云端 URL 下载图片) =================
+# ================= 4. 生成带图 Excel =================
 def export_excel_with_images(df):
     wb = Workbook()
     ws = wb.active
     ws.title = "物料清单-Material List"
     
-    unique_sns = df['SN码'].drop_duplicates()
+    unique_sns = df[C_SN].drop_duplicates()
     max_photos_count = 0
     export_data = []
     
     for sn in unique_sns:
-        mat_history = df[df['SN码'] == sn].copy()
-        mat_history['时间_dt'] = pd.to_datetime(mat_history['时间'], errors='coerce')
-        mat_history = mat_history.sort_values('时间_dt', ascending=False)
+        mat_history = df[df[C_SN] == sn].copy()
+        mat_history[C_TIME] = pd.to_datetime(mat_history[C_TIME], errors='coerce')
+        mat_history = mat_history.sort_values(C_TIME, ascending=False)
         
         latest = mat_history.iloc[0]
-        last_in = mat_history[mat_history['动作'] == '入库'].head(1)
-        last_out = mat_history[mat_history['动作'] == '出库'].head(1)
         
-        in_str = f"{last_in.iloc[0]['时间']} | {last_in.iloc[0]['去向/来源']}" if not last_in.empty else "无 / None"
-        out_str = f"{last_out.iloc[0]['时间']} | {last_out.iloc[0]['去向/来源']}" if not last_out.empty else "无 / None"
+        # 通过 Operator_In 和 Operator_Out 判断历史
+        last_in = mat_history[mat_history[C_OP_IN] != ""].head(1)
+        last_out = mat_history[mat_history[C_OP_OUT] != ""].head(1)
+        
+        in_str = f"{last_in.iloc[0][C_TIME].strftime('%Y-%m-%d %H:%M')} | {last_in.iloc[0][C_FROM]}" if not last_in.empty else "无 / None"
+        out_str = f"{last_out.iloc[0][C_TIME].strftime('%Y-%m-%d %H:%M')} | {last_out.iloc[0][C_TO]}" if not last_out.empty else "无 / None"
+        
+        # 判断状态：最新一条记录如果是Out操作，就是已出库
+        status = "已出库 / Out" if latest[C_OP_OUT] != "" else "在库 / In"
         
         all_imgs = []
-        for p_list in mat_history['照片路径列表']:
+        for p_list in mat_history[C_PHOTOS]:
             if p_list and p_list != "nan":
                 for p in p_list.split(','):
                     p_str = p.strip()
@@ -85,20 +105,19 @@ def export_excel_with_images(df):
             
         export_data.append({
             "base_info": [
-                str(sn), str(latest['物料名称']), str(latest['物料类型']), 
-                str(latest['供应商']), "已出库 / Out" if latest['动作'] == '出库' else "在库 / In",
-                str(in_str), str(out_str), str(latest['档案备注'])
+                str(sn), str(latest[C_NAME]), str(latest[C_TYPE]), 
+                str(latest[C_VENDOR]), status,
+                str(in_str), str(out_str), str(latest[C_NOTE])
             ],
             "imgs": all_imgs
         })
         
-    headers = ["SN码 / SN ", "物料名称 / Material Name", "类型 / Type", "供应商 / Vendor", "状态 / Status", "地点 / Location", "记录时间 / Time", "备注 / Remarks"]
+    headers = ["SN码 / SN ", "物料名称 / Name", "类型 / Type", "供应商 / Vendor", "状态 / Status", "最近入库 / Last In", "最近出库 / Last Out", "备注 / Remarks"]
     for i in range(max_photos_count):
         headers.append(f"照片 {i+1} / Photo {i+1}")
     ws.append(headers)
     
     for cell in ws[1]: cell.font = cell.font.copy(bold=True)
-    
     widths = [15, 20, 10, 12, 10, 25, 25, 30]
     for i, w in enumerate(widths):
         ws.column_dimensions[chr(65+i)].width = w
@@ -112,14 +131,11 @@ def export_excel_with_images(df):
         
         for col_idx in range(1, len(headers) + 1):
             ws.cell(row=current_row, column=col_idx).number_format = '@'
-            
         ws.row_dimensions[current_row].height = 150 
 
         for i, img_url in enumerate(item["imgs"]):
             try:
-                # 从云端 URL 下载图片并写入 Excel
                 resp = requests.get(img_url, timeout=5)
-                resp.raise_for_status()
                 pil_img = PILImage.open(io.BytesIO(resp.content))
                 if pil_img.mode in ("RGBA", "P"): pil_img = pil_img.convert("RGB")
                 pil_img.thumbnail((600, 600), PILImage.Resampling.LANCZOS) 
@@ -133,8 +149,7 @@ def export_excel_with_images(df):
                 xl_img.width = target_width
                 xl_img.height = target_height
                 
-                col_letter = chr(73 + i)
-                ws.add_image(xl_img, f"{col_letter}{current_row}")
+                ws.add_image(xl_img, f"{chr(73 + i)}{current_row}")
             except Exception:
                 pass
                 
@@ -143,7 +158,7 @@ def export_excel_with_images(df):
     buffer.seek(0)
     return buffer
 
-# ================= 4. 侧边栏 UI =================
+# ================= 5. 侧边栏 UI =================
 with st.sidebar:
     st.header("📝 登记新物料 / Register New Material")
     
@@ -151,7 +166,7 @@ with st.sidebar:
     
     default_types = ["Sensor", "Lens", "IRC", "PCB", "机构件 / Mechanical"]
     if not df.empty:
-        existing_types = [t for t in df["物料类型"].unique() if t and t != "nan"]
+        existing_types = [t for t in df[C_TYPE].unique() if t and t != "nan"]
         for t in existing_types:
             if t not in default_types: default_types.append(t)
     
@@ -163,7 +178,7 @@ with st.sidebar:
 
     default_vendors = ["GC", "Qtech", "Newmax", "Omnivision"]
     if not df.empty:
-        existing_vendors = [v for v in df["供应商"].unique() if v and v != "nan"]
+        existing_vendors = [v for v in df[C_VENDOR].unique() if v and v != "nan"]
         for v in existing_vendors:
             if v not in default_vendors: default_vendors.append(v)
                 
@@ -175,12 +190,12 @@ with st.sidebar:
 
     handler = st.text_input("入库经办人 / Inbound Operator *", value="Jerry Wang")
     destination = st.text_input("入库地点/来源 / Inbound Location/Source *", value="SH office")
-    photos = st.file_uploader("上传照片 (支持多选) / Upload Photos (Multiple)", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
+    photos = st.file_uploader("上传照片 / Upload Photos", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
     note = st.text_area("备注/目的 / Remarks/Purpose")
     
     if st.button("提交登记 / Submit Registration", type="primary", use_container_width=True):
         if not material.strip() or not handler.strip():
-            st.error("物料名称和经办人必填！ / Material Name and Operator are required!")
+            st.error("物料名称和经办人必填！ / Required!")
         elif "其他" in type_sel and not final_type.strip():
             st.error("请填写自定义类型 / Please enter custom type")
         elif "其他" in vendor_sel and not final_vendor.strip():
@@ -194,22 +209,24 @@ with st.sidebar:
                     p_name = f"{datetime.now().strftime('%H%M%S')}_{p.name}"
                     file_path = f"{sn}/{p_name}"
                     try:
-                        supabase.storage.from_(BUCKET_NAME).upload(
-                            path=file_path,
-                            file=p.getbuffer(),
-                            file_options={"content-type": p.type}
-                        )
+                        # 使用 p.getvalue() 防止 memoryview 报错
+                        supabase.storage.from_(BUCKET_NAME).upload(path=file_path, file=p.getvalue(), file_options={"content-type": p.type})
                         img_url = supabase.storage.from_(BUCKET_NAME).get_public_url(file_path)
                         saved_photos_urls.append(img_url)
                     except Exception as e:
                         st.error(f"图片上传失败 / Upload failed: {e}")
             
+            # 严格根据你的表头插入数据
             new_data = {
-                "时间": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                "SN码": sn, "物料类型": final_type, "供应商": final_vendor, 
-                "物料名称": material.strip(), "动作": "入库", "去向/来源": destination.strip(), 
-                "经办人": handler.strip(), "备注": note.strip(), 
-                "照片路径列表": ",".join(saved_photos_urls), "档案备注": ""
+                C_TIME: datetime.now().strftime("%Y-%m-%d %H:%M"),
+                C_SN: sn, C_TYPE: final_type, C_VENDOR: final_vendor, 
+                C_NAME: material.strip(), 
+                C_FROM: destination.strip(), 
+                C_CURRENT: destination.strip(), 
+                C_OP_IN: handler.strip(), 
+                C_TO: "", C_TARGET: "", C_OP_OUT: "",  # 入库时不填出库字段
+                C_NOTE: note.strip(), 
+                C_PHOTOS: ",".join(saved_photos_urls)
             }
             
             try:
@@ -222,9 +239,9 @@ with st.sidebar:
                 st.error(f"保存失败 / Save failed: {e}")
                 
     st.divider()
-    st.header("📤 导出给同事 / Export for Colleagues")
+    st.header("📤 导出给同事 / Export")
     if st.button("生成带图 Excel / Generate Excel", use_container_width=True):
-        with st.spinner("正在下载云端原图并打包... / Packing..."):
+        with st.spinner("正在下载原图并打包..."):
             excel_data = export_excel_with_images(df)
             st.download_button(
                 label="👇 点击这里下载 .xlsx / Download",
@@ -234,24 +251,24 @@ with st.sidebar:
                 use_container_width=True
             )
 
-# ================= 5. 主界面展示 =================
+# ================= 6. 主界面展示 =================
 st.markdown("### 🔍 筛选与查找 / Filter & Search")
 f_col1, f_col2, f_col3 = st.columns([2, 1, 1])
 with f_col1: search = st.text_input("关键词 / Keyword")
 with f_col2:
-    all_types = ["全部 / All"] + sorted(list(df["物料类型"].unique()))
+    all_types = ["全部 / All"] + sorted(list(df[C_TYPE].unique()))
     type_filter = st.selectbox("按物料类型 / By Type", all_types)
 with f_col3:
-    all_vendors = ["全部 / All"] + sorted(list(df["供应商"].unique()))
+    all_vendors = ["全部 / All"] + sorted(list(df[C_VENDOR].unique()))
     vendor_filter = st.selectbox("按供应商 / By Vendor", all_vendors)
 
-unique_sns = df[['SN码']].drop_duplicates().sort_values('SN码')
+unique_sns = df[[C_SN]].drop_duplicates().sort_values(C_SN)
 if search:
-    unique_sns = unique_sns[unique_sns['SN码'].apply(lambda sn: search.lower() in df[df['SN码']==sn].astype(str).to_string().lower())]
+    unique_sns = unique_sns[unique_sns[C_SN].apply(lambda sn: search.lower() in df[df[C_SN]==sn].astype(str).to_string().lower())]
 if type_filter != "全部 / All":
-    unique_sns = unique_sns[unique_sns['SN码'].isin(df[df["物料类型"] == type_filter]["SN码"].unique())]
+    unique_sns = unique_sns[unique_sns[C_SN].isin(df[df[C_TYPE] == type_filter][C_SN].unique())]
 if vendor_filter != "全部 / All":
-    unique_sns = unique_sns[unique_sns['SN码'].isin(df[df["供应商"] == vendor_filter]["SN码"].unique())]
+    unique_sns = unique_sns[unique_sns[C_SN].isin(df[df[C_VENDOR] == vendor_filter][C_SN].unique())]
 
 st.divider()
 
@@ -259,19 +276,22 @@ if unique_sns.empty:
     st.info("没有找到符合条件的物料。 / No materials found.")
 else:
     for idx, (_, mat_row) in enumerate(unique_sns.iterrows()):
-        sn = mat_row['SN码']
-        mat_history = df[df['SN码'] == sn].copy().sort_values('时间', ascending=False)
+        sn = mat_row[C_SN]
+        mat_history = df[df[C_SN] == sn].copy().sort_values(C_TIME, ascending=False)
         latest_record = mat_history.iloc[0]
-        name, m_type, vendor, archive_note = latest_record['物料名称'], latest_record['物料类型'], latest_record['供应商'], latest_record['档案备注']
+        name, m_type, vendor = latest_record[C_NAME], latest_record[C_TYPE], latest_record[C_VENDOR]
         
-        last_in = mat_history[mat_history['动作'] == '入库'].head(1)
-        last_out = mat_history[mat_history['动作'] == '出库'].head(1)
+        # 筛选出最近的入库和出库记录
+        last_in = mat_history[mat_history[C_OP_IN] != ""].head(1)
+        last_out = mat_history[mat_history[C_OP_OUT] != ""].head(1)
         
-        status = "已出库 / Out 🔴" if latest_record['动作'] == '出库' else "在库 / In 🟢"
-        status_color = "red" if latest_record['动作'] == '出库' else "green"
+        # 如果最新一条记录的操作员是 Out，则为已出库
+        is_out = latest_record[C_OP_OUT] != ""
+        status = "已出库 / Out 🔴" if is_out else "在库 / In 🟢"
+        status_color = "red" if is_out else "green"
 
         all_photos = []
-        for p_list in mat_history['照片路径列表']:
+        for p_list in mat_history[C_PHOTOS]:
             if p_list and p_list != "nan":
                 for p in p_list.split(','):
                     if p.strip().startswith("http"): all_photos.append(p.strip())
@@ -297,7 +317,7 @@ else:
                     st.markdown("**📥 最近入库 / Last Inbound**")
                     if not last_in.empty:
                         r = last_in.iloc[0]
-                        st.markdown(f"时间 / Time: {r['时间']}  \n地点 / Loc: {r['去向/来源']}  \n经办人 / Op: {r['经办人']}  \n目的 / Purpose: {r['备注']}")
+                        st.markdown(f"时间 / Time: {r[C_TIME]}  \n地点 / Loc: {r[C_FROM]}  \n经办人 / Op: {r[C_OP_IN]}  \n目的 / Purpose: {r[C_NOTE]}")
                     else: 
                         st.write("无记录 / No record")
                         
@@ -305,22 +325,18 @@ else:
                     st.markdown("**📤 最近出库 / Last Outbound**")
                     if not last_out.empty:
                         r = last_out.iloc[0]
-                        st.markdown(f"时间 / Time: {r['时间']}  \n去向 / Dest: {r['去向/来源']}  \n经办人 / Op: {r['经办人']}  \n目的 / Purpose: {r['备注']}")
+                        st.markdown(f"时间 / Time: {r[C_TIME]}  \n去向 / Dest: {r[C_TO]}  \n经办人 / Op: {r[C_OP_OUT]}  \n目的 / Purpose: {r[C_NOTE]}")
                     else: 
                         st.write("无出库记录 / No outbound record")
                 
-                if archive_note and archive_note != "nan":
-                    st.write("") 
-                    st.markdown(f"**📝 备注 / Remarks：** {archive_note}")
-
                 st.divider()
                 
                 btn_col1, btn_col2, btn_col3 = st.columns([1, 1, 2])
                 with btn_col1:
-                    if st.button("📤 借出/出库 / Borrow", key=f"btn_out_{sn}_{idx}", disabled=(status=="已出库 / Out 🔴")):
+                    if st.button("📤 借出/出库 / Borrow", key=f"btn_out_{sn}_{idx}", disabled=is_out):
                         st.session_state[f"action_{sn}_{idx}"] = "出库"
                 with btn_col2:
-                    if st.button("📥 归还/入库 / Return", key=f"btn_in_{sn}_{idx}", disabled=(status=="在库 / In 🟢")):
+                    if st.button("📥 归还/入库 / Return", key=f"btn_in_{sn}_{idx}", disabled=not is_out):
                         st.session_state[f"action_{sn}_{idx}"] = "入库"
                 
                 current_action = st.session_state.get(f"action_{sn}_{idx}")
@@ -329,8 +345,8 @@ else:
                     with st.form(key=f"form_action_{sn}_{idx}"):
                         st.info(f"正在执行 / Executing：{action_zh}")
                         act_handler = st.text_input("经办人 / Operator *", key=f"h_{sn}_{idx}", value="Jerry Wang")
-                        act_dest = st.text_input("去向/地点 / Destination *", key=f"d_{sn}_{idx}", value="借用人/部门 / Borrower" if current_action=="出库" else "SH office")
-                        act_note = st.text_input("本次动作目的/备注 / Purpose", key=f"n_{sn}_{idx}")
+                        act_dest = st.text_input("去向/地点 / Location *", key=f"d_{sn}_{idx}", value="借用人/部门 / Borrower" if current_action=="出库" else "SH office")
+                        act_note = st.text_input("目的/备注 / Purpose", key=f"n_{sn}_{idx}")
                         act_photos = st.file_uploader("补充照片 / Photos", type=["jpg", "png", "jpeg"], accept_multiple_files=True, key=f"p_{sn}_{idx}")
                         
                         col_sub, col_can = st.columns([1, 1])
@@ -344,18 +360,30 @@ else:
                                         p_name = f"{datetime.now().strftime('%H%M%S')}_{p.name}"
                                         file_path = f"{sn}/{p_name}"
                                         try:
-                                            supabase.storage.from_(BUCKET_NAME).upload(path=file_path, file=p.getbuffer(), file_options={"content-type": p.type})
+                                            supabase.storage.from_(BUCKET_NAME).upload(path=file_path, file=p.getvalue(), file_options={"content-type": p.type})
                                             img_url = supabase.storage.from_(BUCKET_NAME).get_public_url(file_path)
                                             new_photos_urls.append(img_url)
                                         except: pass
                                 
-                                new_data = {
-                                    "时间": datetime.now().strftime("%Y-%m-%d %H:%M"), "SN码": sn, 
-                                    "物料类型": m_type, "供应商": vendor, "物料名称": name, 
-                                    "动作": current_action, "去向/来源": act_dest.strip(), 
-                                    "经办人": act_handler.strip(), "备注": act_note.strip(), 
-                                    "照片路径列表": ",".join(new_photos_urls), "档案备注": archive_note
-                                }
+                                # 根据动作填充对应的列
+                                if current_action == "出库":
+                                    new_data = {
+                                        C_TIME: datetime.now().strftime("%Y-%m-%d %H:%M"), C_SN: sn, 
+                                        C_TYPE: m_type, C_VENDOR: vendor, C_NAME: name, 
+                                        C_FROM: "", C_CURRENT: "",
+                                        C_OP_IN: "", 
+                                        C_TO: act_dest.strip(), C_TARGET: act_dest.strip(), C_OP_OUT: act_handler.strip(),
+                                        C_NOTE: act_note.strip(), C_PHOTOS: ",".join(new_photos_urls)
+                                    }
+                                else:
+                                    new_data = {
+                                        C_TIME: datetime.now().strftime("%Y-%m-%d %H:%M"), C_SN: sn, 
+                                        C_TYPE: m_type, C_VENDOR: vendor, C_NAME: name, 
+                                        C_FROM: act_dest.strip(), C_CURRENT: act_dest.strip(), C_OP_IN: act_handler.strip(), 
+                                        C_TO: "", C_TARGET: "", C_OP_OUT: "", 
+                                        C_NOTE: act_note.strip(), C_PHOTOS: ",".join(new_photos_urls)
+                                    }
+                                
                                 try:
                                     supabase.table(TABLE_NAME).insert(new_data).execute()
                                     del st.session_state[f"action_{sn}_{idx}"]
@@ -373,32 +401,37 @@ else:
                         new_name = st.text_input("物料名称 / Name", value=name)
                         new_type = st.text_input("物料类型 / Type", value=m_type)
                         new_vendor = st.text_input("供应商 / Vendor", value=vendor)
-                        new_archive_note = st.text_area("📝 备注 / Remarks", value=archive_note)
+                        
+                        # 追加照片
                         extra_photos = st.file_uploader("追加照片 / Add Photos", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
                         
                         if st.form_submit_button("保存修改 / Save Changes"):
-                            update_data = {
-                                "物料名称": new_name.strip(), "物料类型": new_type.strip(), 
-                                "供应商": new_vendor.strip(), "档案备注": new_archive_note.strip()
-                            }
+                            update_data = {C_NAME: new_name.strip(), C_TYPE: new_type.strip(), C_VENDOR: new_vendor.strip()}
+                            
                             if extra_photos:
                                 new_urls = []
                                 for p in extra_photos:
                                     p_name = f"{datetime.now().strftime('%H%M%S')}_{p.name}"
                                     file_path = f"{sn}/{p_name}"
                                     try:
-                                        supabase.storage.from_(BUCKET_NAME).upload(path=file_path, file=p.getbuffer(), file_options={"content-type": p.type})
+                                        supabase.storage.from_(BUCKET_NAME).upload(path=file_path, file=p.getvalue(), file_options={"content-type": p.type})
                                         img_url = supabase.storage.from_(BUCKET_NAME).get_public_url(file_path)
                                         new_urls.append(img_url)
                                     except: pass
-                                existing_paths = str(latest_record['照片路径列表']).split(',') if latest_record['照片路径列表'] else []
+                                
+                                # 把追加的照片写进最新一条记录
+                                existing_paths = str(latest_record[C_PHOTOS]).split(',') if latest_record[C_PHOTOS] else []
                                 if existing_paths == [""]: existing_paths = []
                                 existing_paths.extend(new_urls)
-                                update_data["照片路径列表"] = ",".join(existing_paths)
+                                
+                                try:
+                                    # 单独更新最新记录的图片
+                                    supabase.table(TABLE_NAME).update({C_PHOTOS: ",".join(existing_paths)}).eq("id", latest_record['id']).execute()
+                                except: pass
                             
                             try:
-                                # 批量更新所有该 SN 码的记录
-                                supabase.table(TABLE_NAME).update(update_data).eq("SN码", sn).execute()
+                                # 批量更新所有该 SN 码的名称、类型、供应商
+                                supabase.table(TABLE_NAME).update(update_data).eq(C_SN, sn).execute()
                                 st.success("档案已更新 / Updated!")
                                 st.cache_data.clear()
                                 st.rerun()
@@ -408,8 +441,7 @@ else:
                     st.divider()
                     if st.button("🗑️ 彻底删除此物料 / Permanently Delete", key=f"del_all_{sn}", type="primary"):
                         try:
-                            # 删除数据库记录 (图片文件暂存在 Storage 中不会自动删，防止误删)
-                            supabase.table(TABLE_NAME).delete().eq("SN码", sn).execute()
+                            supabase.table(TABLE_NAME).delete().eq(C_SN, sn).execute()
                             st.success("已删除 / Deleted!")
                             st.cache_data.clear()
                             st.rerun()
@@ -421,23 +453,28 @@ else:
                     hist_c1, hist_c2 = st.columns([2, 1])
                     with hist_c1:
                         for h_idx, r in mat_history.iterrows():
-                            color = "green" if r['动作'] == "入库" else "red"
-                            act_zh = "入库 / In" if r['动作'] == "入库" else "出库 / Out"
-                            st.markdown(f"**:{color}[{act_zh}]** | {r['时间']} | {r['去向/来源']} | {r['经办人']} | 备注: {r['备注']}")
+                            # 根据操作员字段判断动作
+                            if r[C_OP_OUT] != "":
+                                color, act_zh, dest, op = "red", "出库 / Out", r[C_TO], r[C_OP_OUT]
+                            else:
+                                color, act_zh, dest, op = "green", "入库 / In", r[C_FROM], r[C_OP_IN]
+                                
+                            st.markdown(f"**:{color}[{act_zh}]** | {r[C_TIME]} | {dest} | {op} | 备注: {r[C_NOTE]}")
                             
                             with st.expander("修改/删除 / Edit/Delete"):
                                 with st.form(key=f"edit_hist_{sn}_{h_idx}"):
-                                    new_h_dest = st.text_input("去向/地点 / Loc", value=r['去向/来源'])
-                                    new_h_handler = st.text_input("经办人 / Op", value=r['经办人'])
-                                    new_h_note = st.text_input("目的/备注 / Remark", value=r['备注'])
+                                    new_h_dest = st.text_input("去向/地点 / Loc", value=dest)
+                                    new_h_handler = st.text_input("经办人 / Op", value=op)
+                                    new_h_note = st.text_input("目的/备注 / Remark", value=r[C_NOTE])
                                     if st.form_submit_button("保存 / Save"):
                                         try:
-                                            # 通过 id 字段精确更新某一条
-                                            supabase.table(TABLE_NAME).update({
-                                                "去向/来源": new_h_dest.strip(), 
-                                                "经办人": new_h_handler.strip(), 
-                                                "备注": new_h_note.strip()
-                                            }).eq("id", r['id']).execute()
+                                            # 判断是更新出库还是入库字段
+                                            if r[C_OP_OUT] != "":
+                                                update_dict = {C_TO: new_h_dest.strip(), C_TARGET: new_h_dest.strip(), C_OP_OUT: new_h_handler.strip(), C_NOTE: new_h_note.strip()}
+                                            else:
+                                                update_dict = {C_FROM: new_h_dest.strip(), C_CURRENT: new_h_dest.strip(), C_OP_IN: new_h_handler.strip(), C_NOTE: new_h_note.strip()}
+                                                
+                                            supabase.table(TABLE_NAME).update(update_dict).eq("id", r['id']).execute()
                                             st.success("已更新 / Updated!")
                                             st.cache_data.clear()
                                             st.rerun()
@@ -446,7 +483,6 @@ else:
                                 
                                 if st.button("🗑️ 删除这条 / Delete", key=f"del_hist_{sn}_{h_idx}"):
                                     try:
-                                        # 通过 id 字段精确删除某一条
                                         supabase.table(TABLE_NAME).delete().eq("id", r['id']).execute()
                                         st.success("已删除 / Deleted!")
                                         st.cache_data.clear()
